@@ -50,25 +50,35 @@ import functools
 import logging
 import random
 import time
+import pytz
 
 logger = logging.getLogger('schedule')
 
 
-class CancelJob(object):
+class CancelJob:
     """
     Can be returned from a job to unschedule itself.
     """
     pass
 
 
-class Scheduler(object):
+class Scheduler:
     """
     Objects instantiated by the :class:`Scheduler <Scheduler>` are
     factories to create jobs, keep record of scheduled jobs and
     handle their execution.
     """
-    def __init__(self):
+    def __init__(self, timezone: str = None):
         self.jobs = []
+	self.timezone = self.create_tz(timezone)
+    
+    def create_tz(self, timezone: str = None):
+	if not timezone:
+            return pytz.utc
+	else:
+            if timezone not in pytz.all_timezones:
+                raise ValueError(f"'{timezone}' not supported")
+            return pytz.timezone(timezone)
 
     async def run_pending(self, *args, **kwargs):
         """Run all jobs that are scheduled to run.
@@ -203,10 +213,10 @@ class Scheduler(object):
         :return: Number of seconds until
                  :meth:`next_run <Scheduler.next_run>`.
         """
-        return (self.next_run - datetime.datetime.now()).total_seconds()
+        return (self.next_run - datetime.datetime.now(self.timezone)).total_seconds()
 
 
-class Job(object):
+class Job:
     """
     A periodic job as used by :class:`Scheduler`.
 
@@ -450,7 +460,7 @@ class Job(object):
         """
         :return: ``True`` if the job should be run now.
         """
-        return datetime.datetime.now() >= self.next_run
+        return datetime.datetime.now(self.scheduler.timezone) >= self.next_run
 
     async def run(self):
         """
@@ -460,7 +470,7 @@ class Job(object):
         """
         logger.info('Running job %s', self)
         ret = await self.job_func()
-        self.last_run = datetime.datetime.now()
+        self.last_run = datetime.datetime.now(self.scheduler.timezone)
         self._schedule_next_run()
         return ret
 
@@ -477,7 +487,7 @@ class Job(object):
             interval = self.interval
 
         self.period = datetime.timedelta(**{self.unit: interval})
-        self.next_run = datetime.datetime.now() + self.period
+        self.next_run = datetime.datetime.now(self.scheduler.timezone) + self.period
         if self.start_day is not None:
             assert self.unit == 'weeks'
             weekdays = (
@@ -508,7 +518,7 @@ class Job(object):
             # If we are running for the first time, make sure we run
             # at the specified time *today* (or *this hour*) as well
             if not self.last_run:
-                now = datetime.datetime.now()
+                now = datetime.datetime.now(self.scheduler.timezone)
                 if (self.unit == 'days' and self.at_time > now.time() and
                         self.interval == 1):
                     self.next_run = self.next_run - datetime.timedelta(days=1)
@@ -516,7 +526,7 @@ class Job(object):
                     self.next_run = self.next_run - datetime.timedelta(hours=1)
         if self.start_day is not None and self.at_time is not None:
             # Let's see if we will still make that time we specified today
-            if (self.next_run - datetime.datetime.now()).days >= 7:
+            if (self.next_run - datetime.datetime.now(self.scheduler.timezone)).days >= 7:
                 self.next_run -= self.period
 
 
