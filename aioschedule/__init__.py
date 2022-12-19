@@ -43,13 +43,14 @@ Usage:
 [2] https://github.com/Rykian/clockwork
 [3] https://adam.herokuapp.com/past/2010/6/30/replace_cron_with_clockwork/
 """
+
 import asyncio
 import collections
+import contextlib
 import datetime
 import functools
 import logging
 import random
-import time
 import pytz
 
 logger = logging.getLogger('schedule')
@@ -70,15 +71,14 @@ class Scheduler:
     """
     def __init__(self, timezone: str = None):
         self.jobs = []
-	self.timezone = self.create_tz(timezone)
+        self.timezone = self.create_tz(timezone)
     
     def create_tz(self, timezone: str = None):
-	if not timezone:
+        if not timezone:
             return pytz.utc
-	else:
-            if timezone not in pytz.all_timezones:
-                raise ValueError(f"'{timezone}' not supported")
-            return pytz.timezone(timezone)
+        if timezone not in pytz.all_timezones:
+            raise ValueError(f"'{timezone}' not supported")
+        return pytz.timezone(timezone)
 
     async def run_pending(self, *args, **kwargs):
         """Run all jobs that are scheduled to run.
@@ -115,10 +115,7 @@ class Scheduler:
 		+-----------------------------+----------------------------------------+
         """
         jobs = [job.run() for job in self.jobs if job.should_run]
-        if not jobs:
-            return [], []
-
-        return await asyncio.wait(jobs, *args, **kwargs)
+        return await asyncio.wait(jobs, *args, **kwargs) if jobs else ([], [])
 
     async def run_all(self, delay_seconds=0, *args, **kwargs):
         """Run all jobs regardless if they are scheduled to run or not.
@@ -149,13 +146,10 @@ class Scheduler:
 		+-----------------------------+----------------------------------------+
 		"""
         if delay_seconds:
-            warnings.warn("The `delay_seconds` parameter is deprecated.",
+            logging.warn("The `delay_seconds` parameter is deprecated.",
                 DeprecationWarning)
         jobs = [self._run_job(job) for job in self.jobs[:]]
-        if not jobs:
-            return [], []
-
-        return await asyncio.wait(jobs, *args, **kwargs)
+        return await asyncio.wait(jobs, *args, **kwargs) if jobs else ([], [])
 
     def clear(self, tag=None):
         """
@@ -176,10 +170,8 @@ class Scheduler:
 
         :param job: The job to be unscheduled
         """
-        try:
+        with contextlib.suppress(ValueError):
             self.jobs.remove(job)
-        except ValueError:
-            pass
 
     def every(self, interval=1):
         """
@@ -188,8 +180,7 @@ class Scheduler:
         :param interval: A quantity of a certain time unit
         :return: An unconfigured :class:`Job <Job>`
         """
-        job = Job(interval, self)
-        return job
+        return Job(interval, self)
 
     async def _run_job(self, job):
         ret = await job.run()
@@ -203,9 +194,7 @@ class Scheduler:
 
         :return: A :class:`~datetime.datetime` object
         """
-        if not self.jobs:
-            return None
-        return min(self.jobs).next_run
+        return min(self.jobs).next_run if self.jobs else None
 
     @property
     def idle_seconds(self):
@@ -257,37 +246,31 @@ class Job:
         def format_time(t):
             return t.strftime('%Y-%m-%d %H:%M:%S') if t else '[never]'
 
-        timestats = '(last run: %s, next run: %s)' % (
-                    format_time(self.last_run), format_time(self.next_run))
+        timestats = f'(last run: {format_time(self.last_run)}, next run: {format_time(self.next_run)})'
 
         if hasattr(self.job_func, '__name__'):
             job_func_name = self.job_func.__name__
         else:
             job_func_name = repr(self.job_func)
         args = [repr(x) for x in self.job_func.args]
-        kwargs = ['%s=%s' % (k, repr(v))
-                  for k, v in self.job_func.keywords.items()]
-        call_repr = job_func_name + '(' + ', '.join(args + kwargs) + ')'
+        kwargs = [f'{k}={repr(v)}' for k, v in self.job_func.keywords.items()]
+        call_repr = f'{job_func_name}(' + ', '.join(args + kwargs) + ')'
 
         if self.at_time is not None:
-            return 'Every %s %s at %s do %s %s' % (
-                   self.interval,
-                   self.unit[:-1] if self.interval == 1 else self.unit,
-                   self.at_time, call_repr, timestats)
-        else:
-            fmt = (
-                'Every %(interval)s ' +
-                ('to %(latest)s ' if self.latest is not None else '') +
-                '%(unit)s do %(call_repr)s %(timestats)s'
-            )
+            return f'Every {self.interval} {self.unit[:-1] if self.interval == 1 else self.unit} at {self.at_time} do {call_repr} {timestats}'
+        fmt = (
+            'Every %(interval)s ' +
+            ('to %(latest)s ' if self.latest is not None else '') +
+            '%(unit)s do %(call_repr)s %(timestats)s'
+        )
 
-            return fmt % dict(
-                interval=self.interval,
-                latest=self.latest,
-                unit=(self.unit[:-1] if self.interval == 1 else self.unit),
-                call_repr=call_repr,
-                timestats=timestats
-            )
+        return fmt % dict(
+            interval=self.interval,
+            latest=self.latest,
+            unit=(self.unit[:-1] if self.interval == 1 else self.unit),
+            call_repr=call_repr,
+            timestats=timestats
+        )
 
     @property
     def second(self):
@@ -444,13 +427,8 @@ class Job:
         :return: The invoked job instance
         """
         self.job_func = functools.partial(job_func, *args, **kwargs)
-        try:
+        with contextlib.suppress(AttributeError):
             functools.update_wrapper(self.job_func, job_func)
-        except AttributeError:
-            # job_funcs already wrapped by functools.partial won't have
-            # __name__, __module__ or __doc__ and the update_wrapper()
-            # call will fail.
-            pass
         self._schedule_next_run()
         self.scheduler.jobs.append(self)
         return self
